@@ -22,6 +22,13 @@ COPY . .
 # Install dependencies
 RUN composer install --no-dev --optimize-autoloader
 
+# Clear config cache
+RUN php artisan config:clear || true
+RUN php artisan cache:clear || true
+
+# Run migrations
+RUN php artisan migrate --force || true
+
 # Expose port
 EXPOSE 8000
 
