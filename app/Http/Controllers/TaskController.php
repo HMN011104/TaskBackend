@@ -33,7 +33,7 @@ class TaskController extends Controller
         return response()->json(['message'=>'Deleted']);
     }
     
-    public function index(Request $request)
+    public function stats(Request $request)
     {
         $mode = $request->query('mode', 'month');
         $date = Carbon::parse($request->query('date', Carbon::now()));
