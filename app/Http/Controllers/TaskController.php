@@ -35,60 +35,97 @@ class TaskController extends Controller
     
     public function stats(Request $request)
     {
-        $mode = $request->query('mode', 'month');
+        $mode = $request->query('mode', 'week');
         $date = Carbon::parse($request->query('date', Carbon::now()));
 
-        if ($mode === 'week') {
-            // Lấy thứ 2 đầu tuần và CN cuối tuần
-            $start = $date->copy()->startOfWeek(Carbon::MONDAY);
-            $end   = $date->copy()->endOfWeek(Carbon::SUNDAY);
+        return $mode === 'month'
+            ? $this->monthStats($date)
+            : $this->weekStats($date);
+    }
 
-            $tasks = Task::whereBetween('updated_at', [$start, $end])
-                         ->where('status', 1)
-                         ->get();
+    private function weekStats(Carbon $date)
+    {
+        // Thứ 2 đầu tuần -> CN cuối tuần
+        $start = $date->copy()->startOfWeek(Carbon::SUNDAY); // CN đầu tuần (tuỳ locale)
+        $end   = $date->copy()->endOfWeek(Carbon::SATURDAY);
 
-            // Gom theo từng ngày
-            $days = [];
-            for ($d = 0; $d < 7; $d++) {
-                $current = $start->copy()->addDays($d);
-                $days[] = [
-                    'label' => $current->isoFormat('dd D/M'), // CN 7/9
-                    'count' => $tasks->filter(function ($t) use ($current) {
-                        return Carbon::parse($t->updated_at)->isSameDay($current);
-                    })->count()
-                ];
+        $tasks = Task::where(function ($q) use ($start, $end) {
+                    $q->whereBetween('deadline', [$start, $end])
+                      ->orWhereBetween('updated_at', [$start, $end]);
+                })->get();
+
+        $days = [];
+        for ($i = 0; $i < 7; $i++) {
+            $day = $start->copy()->addDays($i);
+            $onTime = 0;
+            $over   = 0;
+            foreach ($tasks as $t) {
+                if (!$t->deadline) continue;
+
+                $deadline = Carbon::parse($t->deadline);
+                $done     = $t->status;
+                $updated  = Carbon::parse($t->updated_at);
+
+                // Kiểm tra nếu deadline thuộc ngày đang xét
+                if ($deadline->isSameDay($day)) {
+                    if ($done) {
+                        if ($updated->lte($deadline)) $onTime++;
+                        else $over++;
+                    } else {
+                        if (Carbon::now()->gt($deadline)) $over++;
+                    }
+                }
             }
-            return response()->json([
-                'range' => $start->isoFormat('D/M') . ' - ' . $end->isoFormat('D/M'),
-                'data'  => $days
-            ]);
+            $days[] = [
+                'label'   => $day->isoFormat('dd D/M'), // CN 7/9
+                'on_time' => $onTime,
+                'overdue' => $over
+            ];
         }
 
-        // mode = month
+        return response()->json([
+            'range' => $start->isoFormat('D/M') . ' - ' . $end->isoFormat('D/M'),
+            'data'  => $days
+        ]);
+    }
+
+    private function monthStats(Carbon $date)
+    {
         $startMonth = $date->copy()->startOfMonth();
         $endMonth   = $date->copy()->endOfMonth();
+        $tasks = Task::whereBetween('deadline', [$startMonth, $endMonth])->get();
 
-        $tasks = Task::whereBetween('updated_at', [$startMonth, $endMonth])
-                     ->where('status', 1)
-                     ->get();
-
-        // Gom theo từng tuần của tháng
         $weeks = [];
-        $cursor = $startMonth->copy()->startOfWeek(Carbon::MONDAY);
-        while ($cursor->lessThanOrEqualTo($endMonth)) {
+        $cursor = $startMonth->copy();
+        for ($w = 0; $w < 4; $w++) {
             $weekStart = $cursor->copy();
-            $weekEnd   = $cursor->copy()->endOfWeek(Carbon::SUNDAY);
-            $label = $weekStart->isoFormat('D/M') . ' - ' .
-                     min($weekEnd->isoFormat('D/M'), $endMonth->isoFormat('D/M'));
+            $weekEnd   = $cursor->copy()->addDays(6);
+            if ($weekEnd->gt($endMonth)) $weekEnd = $endMonth;
+
+            $onTime = 0;
+            $over   = 0;
+            foreach ($tasks as $t) {
+                if (!$t->deadline) continue;
+
+                $deadline = Carbon::parse($t->deadline);
+                if ($deadline->between($weekStart, $weekEnd)) {
+                    if ($t->status) {
+                        if (Carbon::parse($t->updated_at)->lte($deadline)) $onTime++;
+                        else $over++;
+                    } else {
+                        if (Carbon::now()->gt($deadline)) $over++;
+                    }
+                }
+            }
 
             $weeks[] = [
-                'label' => $label,
-                'count' => $tasks->filter(function ($t) use ($weekStart, $weekEnd) {
-                    $d = Carbon::parse($t->updated_at);
-                    return $d->between($weekStart, $weekEnd);
-                })->count()
+                'label'   => $weekStart->isoFormat('D/M') . ' - ' . $weekEnd->isoFormat('D/M'),
+                'on_time' => $onTime,
+                'overdue' => $over
             ];
+
             $cursor->addWeek();
+            if ($cursor->gt($endMonth)) break;
         }
 
         return response()->json([
