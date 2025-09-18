@@ -32,35 +32,68 @@ class TaskController extends Controller
         $task->delete();
         return response()->json(['message'=>'Deleted']);
     }
- 
+    
     public function index(Request $request)
     {
-        // Lấy tháng cần thống kê, mặc định là tháng hiện tại (YYYY-MM)
-        $monthParam = $request->query('month', Carbon::now()->format('Y-m'));
-        [$year, $month] = explode('-', $monthParam);
+        $mode = $request->query('mode', 'month');
+        $date = Carbon::parse($request->query('date', Carbon::now()));
 
-        // Lọc task đã hoàn thành trong tháng
-        $tasks = Task::whereYear('updated_at', $year)
-            ->whereMonth('updated_at', $month)
-            ->where('status', 1)
-            ->get();
+        if ($mode === 'week') {
+            // Lấy thứ 2 đầu tuần và CN cuối tuần
+            $start = $date->copy()->startOfWeek(Carbon::MONDAY);
+            $end   = $date->copy()->endOfWeek(Carbon::SUNDAY);
 
-        // Gom nhóm theo tuần trong tháng
-        $grouped = [];
-        foreach ($tasks as $task) {
-            $week = Carbon::parse($task->updated_at)->weekOfMonth;
-            $grouped[$week][] = $task;
+            $tasks = Task::whereBetween('updated_at', [$start, $end])
+                         ->where('status', 1)
+                         ->get();
+
+            // Gom theo từng ngày
+            $days = [];
+            for ($d = 0; $d < 7; $d++) {
+                $current = $start->copy()->addDays($d);
+                $days[] = [
+                    'label' => $current->isoFormat('dd D/M'), // CN 7/9
+                    'count' => $tasks->filter(function ($t) use ($current) {
+                        return Carbon::parse($t->updated_at)->isSameDay($current);
+                    })->count()
+                ];
+            }
+            return response()->json([
+                'range' => $start->isoFormat('D/M') . ' - ' . $end->isoFormat('D/M'),
+                'data'  => $days
+            ]);
         }
 
-        // Tạo mảng kết quả
-        $result = [];
-        foreach ($grouped as $week => $items) {
-            $result[] = [
-                'week' => $week,
-                'count' => count($items),
+        // mode = month
+        $startMonth = $date->copy()->startOfMonth();
+        $endMonth   = $date->copy()->endOfMonth();
+
+        $tasks = Task::whereBetween('updated_at', [$startMonth, $endMonth])
+                     ->where('status', 1)
+                     ->get();
+
+        // Gom theo từng tuần của tháng
+        $weeks = [];
+        $cursor = $startMonth->copy()->startOfWeek(Carbon::MONDAY);
+        while ($cursor->lessThanOrEqualTo($endMonth)) {
+            $weekStart = $cursor->copy();
+            $weekEnd   = $cursor->copy()->endOfWeek(Carbon::SUNDAY);
+            $label = $weekStart->isoFormat('D/M') . ' - ' .
+                     min($weekEnd->isoFormat('D/M'), $endMonth->isoFormat('D/M'));
+
+            $weeks[] = [
+                'label' => $label,
+                'count' => $tasks->filter(function ($t) use ($weekStart, $weekEnd) {
+                    $d = Carbon::parse($t->updated_at);
+                    return $d->between($weekStart, $weekEnd);
+                })->count()
             ];
+            $cursor->addWeek();
         }
 
-        return response()->json($result);
+        return response()->json([
+            'range' => $startMonth->isoFormat('MMMM YYYY'),
+            'data'  => $weeks
+        ]);
     }
 }
